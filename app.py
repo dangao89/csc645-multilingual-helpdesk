@@ -275,7 +275,7 @@ def build_summary(analysis):
 
 
 def build_reply_en(analysis):
-    """Short acknowledgement for the student (translated into their language later).
+    """Short acknowledgement for the patient (translated into their language later).
     Key phrases go to staff in summary_en; listing them here sounded awkward when translated."""
     dates = [e["text"] for e in analysis["entities"] if e["category"] == "DateTime"]
     reply = "Thank you. We have received your request."
@@ -285,11 +285,11 @@ def build_reply_en(analysis):
 
 @app.route("/process", methods=["POST"])
 def process():
-    language = request.form.get("language", "en-US")  # the student's language
+    language = request.form.get("language", "en-US")  # the patient's language
     tr_code = to_translator_code(language)
     timings = {}
 
-    # 1-2. audio -> transcript (student's language)
+    # 1-2. audio -> transcript (patient's language)
     t = time.time()
     try:
         stt = transcribe_upload(request.files.get("audio"), language)
@@ -313,7 +313,7 @@ def process():
         analysis = analyze_text(text_en, "en")
         timings["analyze_ms"] = int((time.time() - t) * 1000)
 
-        # 5. summary for staff + reply translated back into the student's language
+        # 5. summary for staff + reply translated back into the patient's language
         summary_en = build_summary(analysis)
         reply_en = build_reply_en(analysis)
         t = time.time()
