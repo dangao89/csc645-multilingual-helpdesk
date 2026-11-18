@@ -1,0 +1,44 @@
+{
+  "analysis": {
+    "entities": [],
+    "key_phrases": [
+      "pay",
+      "pain",
+      "reservation"
+    ],
+    "language": "en",
+    "linked_entities": {
+      "available": true,
+      "items": []
+    },
+    "sentiment": {
+      "label": "negative",
+      "scores": {
+        "negative": 0.99,
+        "neutral": 0.01,
+        "positive": 0.0
+      }
+    },
+    "text": "Hello. My pay is in pain. I made a reservation."
+  },
+  "language": "ko-KR",
+  "reply": {
+    "audio_base64": null,
+    "language": "ko-KR",
+    "text": "감사합니다. 귀하의 요청을 받았습니다. 곧 직원이 도와드릴 것입니다.",
+    "text_en": "Thank you. We have received your request. A staff member will help you shortly."
+  },
+  "summary_en": "The request mentions 3 key topics: pay, pain, reservation. The overall tone is negative.",
+  "timings_ms": {
+    "analyze_ms": 620,
+    "stt_ms": 5806,
+    "translate_back_ms": 717,
+    "translate_to_en_ms": 799
+  },
+  "transcription": {
+    "confidence": 0.83,
+    "duration_seconds": 15.53,
+    "text": "안녕하세요. 페이가 아파요. 예약하고."
+  },
+  "translation_en": "Hello. My pay is in pain. I made a reservation."
+}

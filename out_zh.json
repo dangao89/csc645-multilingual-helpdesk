@@ -1,0 +1,84 @@
+{
+  "analysis": {
+    "entities": [
+      {
+        "category": "PersonType",
+        "confidence": 0.99,
+        "subcategory": null,
+        "text": "doctor"
+      },
+      {
+        "category": "Quantity",
+        "confidence": 1.0,
+        "subcategory": "Temperature",
+        "text": "39°C"
+      },
+      {
+        "category": "DateTime",
+        "confidence": 0.96,
+        "subcategory": "DateTimeRange",
+        "text": "since last night"
+      },
+      {
+        "category": "Quantity",
+        "confidence": 0.8,
+        "subcategory": "Number",
+        "text": "two"
+      },
+      {
+        "category": "Product",
+        "confidence": 0.93,
+        "subcategory": null,
+        "text": "ibuprofen tablets"
+      }
+    ],
+    "key_phrases": [
+      "two ibuprofen tablets",
+      "last night",
+      "sore throat",
+      "doctor",
+      "fever",
+      "39°C"
+    ],
+    "language": "en",
+    "linked_entities": {
+      "available": true,
+      "items": [
+        {
+          "name": "Hello Doctor",
+          "source": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/Hello_Doctor"
+        }
+      ]
+    },
+    "sentiment": {
+      "label": "negative",
+      "scores": {
+        "negative": 0.97,
+        "neutral": 0.03,
+        "positive": 0.0
+      }
+    },
+    "text": "Hello doctor, I have had a fever of 39°C since last night and a very sore throat. I took two ibuprofen tablets but the fever did not subside."
+  },
+  "language": "zh-CN",
+  "reply": {
+    "audio_base64": null,
+    "language": "zh-CN",
+    "text": "谢谢。我们已经收到您的请求。我们记下了您提到的时间：从昨晚开始。工作人员会很快帮您。",
+    "text_en": "Thank you. We have received your request. We noted the time you mentioned: since last night. A staff member will help you shortly."
+  },
+  "summary_en": "The request mentions 6 key topics: two ibuprofen tablets, last night, sore throat, doctor, fever. The overall tone is negative. I detected 1 PersonType, 2 Quantity, 1 DateTime, 1 Product.",
+  "timings_ms": {
+    "analyze_ms": 653,
+    "stt_ms": 5599,
+    "translate_back_ms": 406,
+    "translate_to_en_ms": 446
+  },
+  "transcription": {
+    "confidence": 0.9,
+    "duration_seconds": 15.02,
+    "text": "医生你好，我从昨天晚上开始发烧39度，喉咙很痛，吃了两片布洛芬也没有退烧。"
+  },
+  "translation_en": "Hello doctor, I have had a fever of 39°C since last night and a very sore throat. I took two ibuprofen tablets but the fever did not subside."
+}

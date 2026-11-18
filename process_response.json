@@ -3,78 +3,82 @@
         "entities": [
             {
                 "category": "PersonType",
-                "confidence": 0.65,
+                "confidence": 0.99,
                 "subcategory": null,
-                "text": "international student"
+                "text": "doctor"
             },
             {
-                "category": "Location",
+                "category": "Quantity",
                 "confidence": 1.0,
-                "subcategory": "CountryRegion",
-                "text": "China"
-            },
-            {
-                "category": "Location",
-                "confidence": 1.0,
-                "subcategory": "CountryRegion",
-                "text": "China"
+                "subcategory": "Temperature",
+                "text": "39°C"
             },
             {
                 "category": "DateTime",
-                "confidence": 1.0,
-                "subcategory": "DateRange",
-                "text": "next month"
+                "confidence": 0.96,
+                "subcategory": "DateTimeRange",
+                "text": "since last night"
+            },
+            {
+                "category": "Quantity",
+                "confidence": 0.8,
+                "subcategory": "Number",
+                "text": "two"
+            },
+            {
+                "category": "Product",
+                "confidence": 0.93,
+                "subcategory": null,
+                "text": "ibuprofen tablets"
             }
         ],
         "key_phrases": [
-            "international student",
-            "China",
-            "I20"
+            "two ibuprofen tablets",
+            "last night",
+            "sore throat",
+            "doctor",
+            "fever",
+            "39°C"
         ],
         "language": "en",
         "linked_entities": {
             "available": true,
             "items": [
                 {
-                    "name": "I Am (2012 film)",
+                    "name": "Hello Doctor",
                     "source": "Wikipedia",
-                    "url": "https://en.wikipedia.org/wiki/I_Am_(2012_film)"
-                },
-                {
-                    "name": "China",
-                    "source": "Wikipedia",
-                    "url": "https://en.wikipedia.org/wiki/China"
+                    "url": "https://en.wikipedia.org/wiki/Hello_Doctor"
                 }
             ]
         },
         "sentiment": {
-            "label": "neutral",
+            "label": "negative",
             "scores": {
-                "negative": 0.07,
-                "neutral": 0.93,
+                "negative": 0.97,
+                "neutral": 0.03,
                 "positive": 0.0
             }
         },
-        "text": "Hello, I am an international student from China. My I20 is about to expire, and I want to ask how to extend it. I have to return to China again next month."
+        "text": "Hello doctor, I have had a fever of 39°C since last night and a very sore throat. I took two ibuprofen tablets but the fever did not subside."
     },
     "language": "zh-CN",
     "reply": {
         "audio_base64": null,
         "language": "zh-CN",
-        "text": "谢谢。我们已经收到您的请求。我们注意到您提到的时间：下个月。工作人员会很快帮您。",
-        "text_en": "Thank you. We have received your request. We noted the time you mentioned: next month. A staff member will help you shortly."
+        "text": "谢谢。我们已经收到您的请求。我们记下了您提到的时间：从昨晚开始。工作人员会很快帮您。",
+        "text_en": "Thank you. We have received your request. We noted the time you mentioned: since last night. A staff member will help you shortly."
     },
-    "summary_en": "The request mentions 3 key topics: international student, China, I20. The overall tone is neutral. I detected 1 PersonType, 2 Location, 1 DateTime.",
+    "summary_en": "The request mentions 6 key topics: two ibuprofen tablets, last night, sore throat, doctor, fever. The overall tone is negative. I detected 1 PersonType, 2 Quantity, 1 DateTime, 1 Product.",
     "timings_ms": {
-        "analyze_ms": 1665,
-        "stt_ms": 4899,
-        "translate_back_ms": 790,
-        "translate_to_en_ms": 1404
+        "analyze_ms": 653,
+        "stt_ms": 5599,
+        "translate_back_ms": 406,
+        "translate_to_en_ms": 446
     },
     "transcription": {
-        "confidence": 0.92,
-        "duration_seconds": 11.75,
-        "text": "你好，我是从中国来的留学生，我的I20快要到期了，我想问一下怎么延期，我下个月还要回国一趟。"
+        "confidence": 0.9,
+        "duration_seconds": 15.02,
+        "text": "医生你好，我从昨天晚上开始发烧39度，喉咙很痛，吃了两片布洛芬也没有退烧。"
     },
-    "translation_en": "Hello, I am an international student from China. My I20 is about to expire, and I want to ask how to extend it. I have to return to China again next month."
+    "translation_en": "Hello doctor, I have had a fever of 39°C since last night and a very sore throat. I took two ibuprofen tablets but the fever did not subside."
 }

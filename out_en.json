@@ -1,0 +1,81 @@
+{
+  "analysis": {
+    "entities": [
+      {
+        "category": "Event",
+        "confidence": 0.73,
+        "subcategory": null,
+        "text": "appointment"
+      },
+      {
+        "category": "PersonType",
+        "confidence": 0.71,
+        "subcategory": null,
+        "text": "Doctor"
+      },
+      {
+        "category": "Person",
+        "confidence": 0.99,
+        "subcategory": null,
+        "text": "Smith"
+      },
+      {
+        "category": "DateTime",
+        "confidence": 1.0,
+        "subcategory": "Date",
+        "text": "December 3rd"
+      },
+      {
+        "category": "DateTime",
+        "confidence": 0.86,
+        "subcategory": "Date",
+        "text": "next week"
+      }
+    ],
+    "key_phrases": [
+      "Doctor Smith",
+      "appointment",
+      "December"
+    ],
+    "language": "en",
+    "linked_entities": {
+      "available": true,
+      "items": [
+        {
+          "name": "Metalsmith",
+          "source": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/Metalsmith"
+        }
+      ]
+    },
+    "sentiment": {
+      "label": "neutral",
+      "scores": {
+        "negative": 0.0,
+        "neutral": 1.0,
+        "positive": 0.0
+      }
+    },
+    "text": "Hi, I need to reschedule my appointment with Doctor Smith on December 3rd. Is anything available next week?"
+  },
+  "language": "en-US",
+  "reply": {
+    "audio_base64": null,
+    "language": "en-US",
+    "text": "Thank you. We have received your request. We noted the time you mentioned: December 3rd. A staff member will help you shortly.",
+    "text_en": "Thank you. We have received your request. We noted the time you mentioned: December 3rd. A staff member will help you shortly."
+  },
+  "summary_en": "The request mentions 3 key topics: Doctor Smith, appointment, December. The overall tone is neutral. I detected 1 Event, 1 PersonType, 1 Person, 2 DateTime.",
+  "timings_ms": {
+    "analyze_ms": 1133,
+    "stt_ms": 5781,
+    "translate_back_ms": 0,
+    "translate_to_en_ms": 0
+  },
+  "transcription": {
+    "confidence": 0.79,
+    "duration_seconds": 15.36,
+    "text": "Hi, I need to reschedule my appointment with Doctor Smith on December 3rd. Is anything available next week?"
+  },
+  "translation_en": "Hi, I need to reschedule my appointment with Doctor Smith on December 3rd. Is anything available next week?"
+}

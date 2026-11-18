@@ -1,0 +1,69 @@
+{
+  "analysis": {
+    "entities": [
+      {
+        "category": "PersonType",
+        "confidence": 0.99,
+        "subcategory": null,
+        "text": "friend"
+      },
+      {
+        "category": "PersonType",
+        "confidence": 1.0,
+        "subcategory": null,
+        "text": "son"
+      },
+      {
+        "category": "DateTime",
+        "confidence": 0.82,
+        "subcategory": "DateRange",
+        "text": "Since yesterday"
+      }
+    ],
+    "key_phrases": [
+      "friend",
+      "son",
+      "yesterday"
+    ],
+    "language": "en",
+    "linked_entities": {
+      "available": true,
+      "items": [
+        {
+          "name": "Since Yesterday",
+          "source": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/Since_Yesterday"
+        }
+      ]
+    },
+    "sentiment": {
+      "label": "neutral",
+      "scores": {
+        "negative": 0.01,
+        "neutral": 0.89,
+        "positive": 0.1
+      }
+    },
+    "text": "Hello, my friend. You have a son. Since yesterday. See him."
+  },
+  "language": "es-ES",
+  "reply": {
+    "audio_base64": null,
+    "language": "es-ES",
+    "text": "Gracias. Hemos recibido su solicitud. Tomamos nota de la hora que mencionó: Desde ayer. Un miembro del personal le ayudará en breve.",
+    "text_en": "Thank you. We have received your request. We noted the time you mentioned: Since yesterday. A staff member will help you shortly."
+  },
+  "summary_en": "The request mentions 3 key topics: friend, son, yesterday. The overall tone is neutral. I detected 2 PersonType, 1 DateTime.",
+  "timings_ms": {
+    "analyze_ms": 1019,
+    "stt_ms": 12349,
+    "translate_back_ms": 898,
+    "translate_to_en_ms": 841
+  },
+  "transcription": {
+    "confidence": 0.56,
+    "duration_seconds": 28.93,
+    "text": "Hola mi. Hijo tiene. Desde ayer. Verlo."
+  },
+  "translation_en": "Hello, my friend. You have a son. Since yesterday. See him."
+}
