@@ -275,11 +275,13 @@ def build_summary(analysis):
 
 
 def build_reply_en(analysis):
-    """Short acknowledgement for the student (later translated into their language)."""
-    topics = ", ".join(analysis["key_phrases"][:3]) or "your question"
-    return (f"Thank you. We received your request about {topics}. "
-            "A staff member will help you shortly.")
-
+    """Short acknowledgement for the student (translated into their language later).
+    Key phrases go to staff in summary_en; listing them here sounded awkward when translated."""
+    dates = [e["text"] for e in analysis["entities"] if e["category"] == "DateTime"]
+    reply = "Thank you. We have received your request."
+    if dates:
+        reply += f" We noted the time you mentioned: {dates[0]}."
+    return reply + " A staff member will help you shortly."
 
 @app.route("/process", methods=["POST"])
 def process():
