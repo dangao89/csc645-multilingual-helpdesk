@@ -1,0 +1,80 @@
+{
+  "analysis": {
+    "entities": [
+      {
+        "category": "PersonType",
+        "confidence": 0.65,
+        "subcategory": null,
+        "text": "international student"
+      },
+      {
+        "category": "Location",
+        "confidence": 1.0,
+        "subcategory": "CountryRegion",
+        "text": "China"
+      },
+      {
+        "category": "Location",
+        "confidence": 1.0,
+        "subcategory": "CountryRegion",
+        "text": "China"
+      },
+      {
+        "category": "DateTime",
+        "confidence": 1.0,
+        "subcategory": "DateRange",
+        "text": "next month"
+      }
+    ],
+    "key_phrases": [
+      "international student",
+      "My I20",
+      "China"
+    ],
+    "language": "en",
+    "linked_entities": {
+      "available": true,
+      "items": [
+        {
+          "name": "I Am (2012 film)",
+          "source": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/I_Am_(2012_film)"
+        },
+        {
+          "name": "China",
+          "source": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/China"
+        }
+      ]
+    },
+    "sentiment": {
+      "label": "neutral",
+      "scores": {
+        "negative": 0.05,
+        "neutral": 0.95,
+        "positive": 0.0
+      }
+    },
+    "text": "Hello, I am an international student from China. My I20 is about to expire. I want to ask how to extend it. I have to return to China next month."
+  },
+  "language": "zh-CN",
+  "reply": {
+    "audio_base64": null,
+    "language": "zh-CN",
+    "text": "谢谢。我们收到了您关于国际学生的请求，我的I20，中国。工作人员会很快为您提供帮助。",
+    "text_en": "Thank you. We received your request about international student, My I20, China. A staff member will help you shortly."
+  },
+  "summary_en": "The request mentions 3 key topics: international student, My I20, China. The overall tone is neutral. I detected 1 PersonType, 2 Location, 1 DateTime.",
+  "timings_ms": {
+    "analyze_ms": 1617,
+    "stt_ms": 4285,
+    "translate_back_ms": 919,
+    "translate_to_en_ms": 1215
+  },
+  "transcription": {
+    "confidence": 0.92,
+    "duration_seconds": 11.75,
+    "text": "你好，我是从中国来的留学生，我的I20快要到期了，我想问一下怎么延期，我下个月还要回国一趟。"
+  },
+  "translation_en": "Hello, I am an international student from China. My I20 is about to expire. I want to ask how to extend it. I have to return to China next month."
+}
