@@ -1,4 +1,4 @@
-# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process)
+# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2: TTS)
 import os
 import json
 import shutil
@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import wave
+import base64
 
 import requests
 
@@ -235,6 +236,33 @@ def analyze():
         return jsonify({"error": "Language service error: " + str(e)[:300]}), 502
 
 
+# ---------------- Part D: Text-to-Speech ----------------
+
+# One neural voice per language (D3 will add three choices per language).
+DEFAULT_VOICES = {
+    "en-US": "en-US-JennyNeural",
+    "zh-CN": "zh-CN-XiaoxiaoNeural",
+    "es-ES": "es-ES-ElviraNeural",
+    "ko-KR": "ko-KR-SunHiNeural",
+    "ja-JP": "ja-JP-NanamiNeural",
+}
+
+
+def synthesize(text, voice):
+    """D2: Azure neural TTS -> MP3 bytes (Audio16Khz32KBitRateMonoMp3)."""
+    speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+    speech_config.speech_synthesis_voice_name = voice
+    speech_config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+    )
+    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+    result = synthesizer.speak_text_async(text).get()
+    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        details = result.cancellation_details
+        raise RuntimeError(f"TTS failed: {details.reason} {details.error_details}")
+    return result.audio_data
+
+
 # ---------------- Part C2: full pipeline ----------------
 
 def to_translator_code(locale):
@@ -283,6 +311,7 @@ def build_reply_en(analysis):
         reply += f" We noted the time you mentioned: {dates[0]}."
     return reply + " A staff member will help you shortly."
 
+
 @app.route("/process", methods=["POST"])
 def process():
     language = request.form.get("language", "en-US")  # the patient's language
@@ -319,6 +348,12 @@ def process():
         t = time.time()
         reply_text = reply_en if tr_code == "en" else translate(reply_en, tr_code, "en")
         timings["translate_back_ms"] = int((time.time() - t) * 1000)
+
+        # 6. Part D2: speak the reply in the patient's language
+        voice = DEFAULT_VOICES.get(language, "en-US-AvaMultilingualNeural")
+        t = time.time()
+        audio_b64 = base64.b64encode(synthesize(reply_text, voice)).decode("ascii")
+        timings["tts_ms"] = int((time.time() - t) * 1000)
     except Exception as e:
         return jsonify({"error": "Pipeline error: " + str(e)[:300], "transcription": stt}), 502
 
@@ -336,7 +371,8 @@ def process():
             "text_en": reply_en,
             "text": reply_text,
             "language": language,
-            "audio_base64": None,  # Part D: TTS goes here
+            "voice": voice,
+            "audio_base64": audio_b64,  # browser plays it as data:audio/mp3;base64,...
         },
         "timings_ms": timings,
     })
