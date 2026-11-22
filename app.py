@@ -1,4 +1,4 @@
-# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2: TTS)
+# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices)
 import os
 import json
 import shutil
@@ -238,14 +238,40 @@ def analyze():
 
 # ---------------- Part D: Text-to-Speech ----------------
 
-# One neural voice per language (D3 will add three choices per language).
-DEFAULT_VOICES = {
-    "en-US": "en-US-JennyNeural",
-    "zh-CN": "zh-CN-XiaoxiaoNeural",
-    "es-ES": "es-ES-ElviraNeural",
-    "ko-KR": "ko-KR-SunHiNeural",
-    "ja-JP": "ja-JP-NanamiNeural",
+# D3: three neural voices per language, each with a different persona.
+# The first voice in each list is the default.
+VOICES = {
+    "en-US": [("en-US-JennyNeural", "friendly"), ("en-US-GuyNeural", "formal"), ("en-US-AriaNeural", "energetic")],
+    "zh-CN": [("zh-CN-XiaoxiaoNeural", "warm"), ("zh-CN-YunyangNeural", "formal"), ("zh-CN-YunxiNeural", "lively")],
+    "es-ES": [("es-ES-ElviraNeural", "friendly"), ("es-ES-AlvaroNeural", "formal"), ("es-ES-AbrilNeural", "energetic")],
+    "ko-KR": [("ko-KR-SunHiNeural", "friendly"), ("ko-KR-InJoonNeural", "formal"), ("ko-KR-BongJinNeural", "casual")],
+    "ja-JP": [("ja-JP-NanamiNeural", "friendly"), ("ja-JP-KeitaNeural", "formal"), ("ja-JP-AoiNeural", "energetic")],
 }
+# Any other language: multilingual voices that can read text in many languages.
+MULTILINGUAL_VOICES = [("en-US-AvaMultilingualNeural", "friendly"),
+                       ("en-US-AndrewMultilingualNeural", "formal"),
+                       ("en-US-EmmaMultilingualNeural", "energetic")]
+
+
+def voice_options(language):
+    """D3: the three (voice, persona) choices for this language."""
+    return VOICES.get(language, MULTILINGUAL_VOICES)
+
+
+def pick_voice(language, choice):
+    """D3: use the voice the user chose if it belongs to this language, else the default."""
+    names = [v for v, _ in voice_options(language)]
+    return choice if choice in names else names[0]
+
+
+@app.route("/voices")
+def voices():
+    """D3: GET /voices?language=zh-CN -> the voices the frontend dropdown can show."""
+    language = request.args.get("language", "en-US")
+    return jsonify({
+        "language": language,
+        "voices": [{"name": v, "persona": p} for v, p in voice_options(language)],
+    })
 
 
 def synthesize(text, voice):
@@ -350,7 +376,7 @@ def process():
         timings["translate_back_ms"] = int((time.time() - t) * 1000)
 
         # 6. Part D2: speak the reply in the patient's language
-        voice = DEFAULT_VOICES.get(language, "en-US-AvaMultilingualNeural")
+        voice = pick_voice(language, request.form.get("voice"))  # D3: user's choice
         t = time.time()
         audio_b64 = base64.b64encode(synthesize(reply_text, voice)).decode("ascii")
         timings["tts_ms"] = int((time.time() - t) * 1000)
