@@ -1,4 +1,4 @@
-# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices)
+# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices, E: web page)
 import os
 import json
 import shutil
@@ -12,7 +12,7 @@ import base64
 import requests
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import azure.cognitiveservices.speech as speechsdk
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
@@ -117,6 +117,12 @@ def transcribe_wav(wav_path, language):
         "confidence": round(sum(confidences) / len(confidences), 2) if confidences else None,
         "words": words,
     }
+
+
+@app.route("/")
+def home():
+    """Part E: open http://localhost:8000 to get the web page (index.html in this folder)."""
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
 
 @app.route("/health")
