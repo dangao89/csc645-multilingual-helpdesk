@@ -1,4 +1,4 @@
-# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices, E: web page)
+# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices, E: web page, H: confidence-aware retry + SQLite log + /stats)
 import os
 import json
 import shutil
@@ -8,6 +8,9 @@ import threading
 import time
 import wave
 import base64
+import sqlite3                     # Part H item 3: local log database (built into Python)
+import uuid
+from datetime import datetime, timezone
 
 import requests
 
@@ -37,6 +40,110 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB limit
 
 ALLOWED_EXT = {".wav", ".mp3", ".ogg", ".webm", ".m4a", ".aac"}
 TICKS_PER_SECOND = 10_000_000  # SDK time unit is 100 ns
+LOW_WORD_CONFIDENCE = 0.70     # Part H item 1: flag words below this
+RETRY_CONFIDENCE = 0.85        # Part H item 2: retry when overall confidence is below this
+
+# Part H item 2: "a different language model hint" = another regional version of the
+# same language. Korean and Japanese have only one locale in Azure, so they are not retried.
+ALTERNATE_LOCALE = {
+    "en-US": "en-GB", "en-GB": "en-US",
+    "es-ES": "es-MX", "es-MX": "es-ES",
+    "zh-CN": "zh-TW", "zh-TW": "zh-CN",
+}
+
+
+# ---------------- Part H item 3: SQLite log of confidence scores and retry decisions ----------------
+# Locally the database file sits next to app.py.
+# On Azure App Service we use /tmp (the instance's own local disk). We do NOT use /home:
+# /home is a network share, and Microsoft says SQLite is not supported there because file
+# locking is unreliable. Trade-off: the /tmp log is cleared when the app restarts.
+if os.environ.get("WEBSITE_SITE_NAME"):          # this variable only exists on App Service
+    DB_PATH = "/tmp/confidence_log.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "confidence_log.db")
+
+# A new id every time the server starts, so /stats can report "this session" separately.
+# (startup.sh runs gunicorn with its default of ONE worker, so one server run = one session.)
+SESSION_ID = uuid.uuid4().hex
+
+
+def db_connect():
+    # wait up to 10 s if another request is writing at the same moment
+    return sqlite3.connect(DB_PATH, timeout=10)
+
+
+def init_db():
+    """Create the database file, table and index if they do not exist yet."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with db_connect() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS confidence_log (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at            TEXT,     -- UTC time, ISO format
+                session_id            TEXT,     -- which server run this came from
+                endpoint              TEXT,     -- /process or /transcribe
+                requested_locale      TEXT,     -- language the user picked, e.g. es-ES
+                used_locale           TEXT,     -- locale whose result was kept
+                original_confidence   REAL,     -- first try, overall score (unrounded)
+                retry_attempted       INTEGER,  -- 1 = re-submitted with another locale
+                retry_locale          TEXT,
+                retry_confidence      REAL,     -- retry, overall score (unrounded)
+                retry_used            INTEGER,  -- 1 = the retry result was kept
+                final_confidence      REAL,     -- overall score of the kept result (unrounded)
+                retry_reason          TEXT,     -- why we retried / kept / switched
+                word_count            INTEGER,  -- words in the kept result
+                word_conf_count       INTEGER,  -- of those, words that have a score
+                word_conf_avg         REAL,
+                word_conf_min         REAL,
+                low_confidence_words  INTEGER,  -- words below 0.70 in the kept result
+                attempts_json         TEXT,     -- EVERY attempt: locale, score and each word's score
+                duration_seconds      REAL,
+                first_stt_ms          INTEGER,
+                retry_stt_ms          INTEGER
+            )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_confidence_log_session ON confidence_log(session_id)")
+
+
+def log_transcription(result, endpoint):
+    """Write one row per transcription. Logging must never break the request,
+    so any database error is printed and ignored. Returns the new row id or None."""
+    attempts = result.pop("_attempts", [])      # internal only: not sent to the browser
+    r = result["retry"]
+    scores = [w["confidence"] for w in result["words"] if w["confidence"] is not None]
+    raw = lambda n: attempts[n]["confidence"] if len(attempts) > n else None
+    try:
+        with db_connect() as db:
+            cur = db.execute(
+                """INSERT INTO confidence_log (created_at, session_id, endpoint, requested_locale,
+                   used_locale, original_confidence, retry_attempted, retry_locale, retry_confidence,
+                   retry_used, final_confidence, retry_reason, word_count, word_conf_count,
+                   word_conf_avg, word_conf_min, low_confidence_words, attempts_json,
+                   duration_seconds, first_stt_ms, retry_stt_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    SESSION_ID, endpoint, r["original_locale"], r["used_locale"],
+                    raw(0), int(r["attempted"]), r["retry_locale"], raw(1),
+                    int(r["used_locale"] != r["original_locale"]),
+                    result["confidence_raw"], r.get("reason"),
+                    len(result["words"]), len(scores),
+                    sum(scores) / len(scores) if scores else None,
+                    min(scores) if scores else None,
+                    len(result["low_confidence_words"]),
+                    json.dumps(attempts, ensure_ascii=False),
+                    result["duration_seconds"], r["first_stt_ms"], r["retry_stt_ms"],
+                ),
+            )
+            return cur.lastrowid
+    except sqlite3.Error as e:
+        print("WARNING: could not write to the SQLite log:", e)
+        return None
+
+
+try:
+    init_db()
+except sqlite3.Error as e:          # never stop the app because of the log
+    print("WARNING: could not create the SQLite log:", e)
 
 
 def to_wav_16k_mono(src_path):
@@ -100,11 +207,16 @@ def transcribe_wav(wav_path, language):
         if "Confidence" in best:
             confidences.append(best["Confidence"])
         for w in best.get("Words", []):
+            # Part H item 1: use the WORD's own score only. If Azure gives none,
+            # keep None (do not borrow the sentence score).
+            conf = w.get("Confidence")
             words.append({
                 "word": w.get("Word"),
                 "offset": round(w.get("Offset", 0) / TICKS_PER_SECOND, 2),
                 "duration": round(w.get("Duration", 0) / TICKS_PER_SECOND, 2),
-                "confidence": w.get("Confidence", best.get("Confidence")),
+                "confidence": conf,
+                # Part H item 1: flag words the recognizer is unsure about
+                "low_confidence": conf is not None and conf < LOW_WORD_CONFIDENCE,
             })
 
     with wave.open(wav_path, "rb") as w:
@@ -115,7 +227,17 @@ def transcribe_wav(wav_path, language):
         "language": language,
         "duration_seconds": round(duration, 2),
         "confidence": round(sum(confidences) / len(confidences), 2) if confidences else None,
+        # Part H item 2: unrounded mean of the segment scores, used for the 0.85 decision
+        # (0.846 must NOT be rounded up to 0.85 and skip the retry)
+        "confidence_raw": sum(confidences) / len(confidences) if confidences else None,
         "words": words,
+        # Part H item 1: flagged words with their position in "words" and their score,
+        # so a word that appears twice is never confused with its other copy.
+        "low_confidence_words": [
+            {"index": i, "word": w["word"], "confidence": w["confidence"]}
+            for i, w in enumerate(words) if w["low_confidence"]
+        ],
+        "word_confidence_available": any(w["confidence"] is not None for w in words),
     }
 
 
@@ -137,7 +259,7 @@ class AudioError(Exception):
         self.status = status
 
 
-def transcribe_upload(file, language):
+def transcribe_upload(file, language, endpoint="/transcribe"):
     """Save the upload to a temp folder, convert if needed, transcribe, then delete it."""
     if file is None:
         raise AudioError("No file uploaded. Use form field 'audio'.", 400)
@@ -153,7 +275,9 @@ def transcribe_upload(file, language):
         if wav_path is None or not is_valid_wav(wav_path):
             raise AudioError("Could not read this audio. Please upload a 16kHz mono WAV file.", 415)
         try:
-            return transcribe_wav(wav_path, language)
+            result = transcribe_with_retry(wav_path, language)   # Part H item 2
+            result["log_id"] = log_transcription(result, endpoint)  # Part H item 3
+            return result
         except RuntimeError as e:
             msg = str(e)
             if "format" in msg.lower() or "header" in msg.lower():
@@ -161,6 +285,68 @@ def transcribe_upload(file, language):
             raise
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)  # delete temp file
+
+
+def summarize_attempt(locale, res):
+    """Part H item 3: what we keep about each attempt (also the one we throw away)."""
+    return {"locale": locale, "confidence": res["confidence_raw"], "transcript": res["transcript"],
+            "words": [{"word": w["word"], "confidence": w["confidence"]} for w in res["words"]]}
+
+
+def transcribe_with_retry(wav_path, language):
+    """Part H item 2: transcribe once; if overall confidence is below 0.85, re-submit the
+    same audio with the alternate locale and keep whichever result is better."""
+    t = time.time()
+    first = transcribe_wav(wav_path, language)
+    first_ms = int((time.time() - t) * 1000)
+    attempts = [summarize_attempt(language, first)]   # Part H item 3: logged to SQLite
+    # Overall confidence = mean of the segment scores. Compare the UNROUNDED value;
+    # no speech recognized counts as 0.
+    first_conf = first["confidence_raw"] if first["confidence_raw"] is not None else 0.0
+    alt = ALTERNATE_LOCALE.get(language)
+    retry = {
+        "threshold": RETRY_CONFIDENCE,
+        "original_locale": language,
+        "original_confidence": first["confidence"],
+        "attempted": False,
+        "retry_locale": None,
+        "retry_confidence": None,
+        "used_locale": language,
+        "first_stt_ms": first_ms,
+        "retry_stt_ms": None,
+    }
+
+    def keep_first(reason):
+        retry["reason"] = reason
+        return {**first, "recognition_language": language, "retry": retry, "_attempts": attempts}
+
+    if first_conf >= RETRY_CONFIDENCE:
+        return keep_first(f"confidence {first['confidence']} is at or above {RETRY_CONFIDENCE}: no retry needed")
+    if alt is None:
+        return keep_first(f"confidence {first['confidence']} is below {RETRY_CONFIDENCE}, but {language} has no alternate locale")
+
+    retry["attempted"] = True
+    retry["retry_locale"] = alt
+    t = time.time()
+    try:
+        second = transcribe_wav(wav_path, alt)
+    except Exception as e:   # the retry is optional: any failure keeps the first result
+        retry["retry_stt_ms"] = int((time.time() - t) * 1000)
+        return keep_first(f"retry with {alt} failed ({type(e).__name__}: {str(e)[:100]}): kept {language} result")
+    retry["retry_stt_ms"] = int((time.time() - t) * 1000)
+    retry["retry_confidence"] = second["confidence"]
+    attempts.append(summarize_attempt(alt, second))
+    second_conf = second["confidence_raw"] if second["confidence_raw"] is not None else 0.0
+
+    if not second["transcript"]:
+        return keep_first(f"{alt} recognized no speech: kept {language} result")
+    if not first["transcript"] or second_conf > first_conf:
+        why = (f"{language} recognized no speech" if not first["transcript"]
+               else f"{alt} scored higher ({second['confidence']} > {first['confidence']})")
+        retry["used_locale"] = alt
+        retry["reason"] = f"{why}: using {alt} result"
+        return {**second, "recognition_language": alt, "retry": retry, "_attempts": attempts}
+    return keep_first(f"{alt} did not score higher ({second['confidence']} <= {first['confidence']}): kept {language} result")
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -353,12 +539,12 @@ def process():
     # 1-2. audio -> transcript (patient's language)
     t = time.time()
     try:
-        stt = transcribe_upload(request.files.get("audio"), language)
+        stt = transcribe_upload(request.files.get("audio"), language, endpoint="/process")
     except AudioError as e:
         return jsonify({"error": str(e)}), e.status
     except RuntimeError as e:
         return jsonify({"error": "Speech service error: " + str(e)}), 502
-    timings["stt_ms"] = int((time.time() - t) * 1000)
+    timings["stt_ms"] = int((time.time() - t) * 1000)   # includes the retry, if any
 
     if not stt["transcript"]:
         return jsonify({"error": "No speech recognized in the audio.", "transcription": stt}), 422
@@ -366,7 +552,10 @@ def process():
     try:
         # 3. translate to English for staff (skip if already English)
         t = time.time()
-        text_en = stt["transcript"] if tr_code == "en" else translate(stt["transcript"], "en", tr_code)
+        # Part H item 2: translate from the locale that was actually used (zh-TW gives
+        # Traditional characters, so the source code must be zh-Hant, not zh-Hans)
+        src_code = to_translator_code(stt["recognition_language"])
+        text_en = stt["transcript"] if src_code == "en" else translate(stt["transcript"], "en", src_code)
         timings["translate_to_en_ms"] = int((time.time() - t) * 1000)
 
         # 4. Language analysis on the English text
@@ -395,6 +584,13 @@ def process():
             "text": stt["transcript"],
             "confidence": stt["confidence"],
             "duration_seconds": stt["duration_seconds"],
+            "words": stt["words"],                              # Part H item 1: per-word confidence + flag
+            "low_confidence_words": stt["low_confidence_words"],
+            "word_confidence_available": stt["word_confidence_available"],
+            "low_confidence_threshold": LOW_WORD_CONFIDENCE,   # the UI reads it from here
+            "recognition_language": stt["recognition_language"],  # Part H item 2
+            "retry": stt["retry"],                                # Part H item 2: retry decision
+            "log_id": stt["log_id"],                              # Part H item 3: row in SQLite
         },
         "translation_en": text_en,
         "analysis": analysis,
@@ -407,6 +603,85 @@ def process():
             "audio_base64": audio_b64,  # browser plays it as data:audio/mp3;base64,...
         },
         "timings_ms": timings,
+    })
+
+
+# ---------------- Part H item 4: GET /stats ----------------
+# Shared SELECT used for the overall numbers and for each language.
+STATS_SQL = """
+    SELECT COUNT(*)                                              AS transcriptions,
+           COUNT(final_confidence)                               AS with_confidence,
+           AVG(final_confidence)                                 AS avg_confidence,
+           MIN(final_confidence)                                 AS min_confidence,
+           MAX(final_confidence)                                 AS max_confidence,
+           COUNT(original_confidence)                            AS first_tries_with_confidence,
+           AVG(original_confidence)                              AS avg_first_try_confidence,
+           SUM(CASE WHEN original_confidence IS NULL
+                     OR original_confidence < ? THEN 1 ELSE 0 END) AS below_retry_threshold,
+           SUM(retry_attempted)                                  AS retries_attempted,
+           SUM(retry_used)                                       AS retries_used,
+           SUM(word_count)                                       AS words,
+           SUM(low_confidence_words)                             AS low_confidence_words,
+           SUM(word_conf_count)                                  AS words_with_confidence,
+           SUM(word_conf_avg * word_conf_count) / NULLIF(SUM(word_conf_count), 0)
+                                                                 AS avg_word_confidence,
+           MIN(word_conf_min)                                    AS min_word_confidence,
+           AVG(first_stt_ms)                                     AS avg_first_stt_ms,
+           AVG(retry_stt_ms)                                     AS avg_retry_stt_ms
+    FROM confidence_log
+"""
+
+
+def tidy(row):
+    """Round the numbers so the JSON is easy to read (the database keeps full precision)."""
+    out = {}
+    row = dict(row)
+    n, words = row["transcriptions"] or 0, row["words_with_confidence"] or 0
+    row["retry_rate"] = (row["retries_attempted"] or 0) / n if n else None
+    row["low_confidence_word_rate"] = (row["low_confidence_words"] or 0) / words if words else None
+    for k, v in row.items():
+        if isinstance(v, float):
+            v = round(v) if k.endswith("_ms") else round(v, 3)
+        out[k] = v if v is not None else (0 if k in ("retries_attempted", "retries_used", "words",
+                                                      "low_confidence_words", "below_retry_threshold",
+                                                      "words_with_confidence") else None)
+    return out
+
+
+@app.route("/stats")
+def stats():
+    """Part H item 4: aggregate confidence statistics from the SQLite log.
+    Default = this session (since the server started). ?scope=all = every row in the database."""
+    scope = request.args.get("scope", "session")
+    if scope not in ("session", "all"):
+        return jsonify({"error": "scope must be 'session' or 'all'"}), 400
+    where, params = ("WHERE session_id = ?", [SESSION_ID]) if scope == "session" else ("", [])
+    try:
+        with db_connect() as db:
+            db.row_factory = sqlite3.Row
+            overall = db.execute(STATS_SQL + where, [RETRY_CONFIDENCE] + params).fetchone()
+            by_lang = db.execute(
+                STATS_SQL.replace("SELECT ", "SELECT requested_locale AS locale, ", 1) + where +
+                " GROUP BY requested_locale ORDER BY requested_locale",
+                [RETRY_CONFIDENCE] + params).fetchall()
+    except sqlite3.Error as e:
+        return jsonify({"error": "Could not read the SQLite log: " + str(e)}), 500
+
+    return jsonify({
+        "scope": scope,
+        "session_id": SESSION_ID if scope == "session" else None,
+        "thresholds": {"retry_below": RETRY_CONFIDENCE, "word_flag_below": LOW_WORD_CONFIDENCE},
+        "overall": tidy(overall),
+        "by_language": [tidy(r) for r in by_lang],
+        "notes": [
+            "avg/min/max_confidence = overall score of the result that was kept (after any retry); "
+            "with_confidence is their denominator",
+            "avg_first_try_confidence = before any retry; first_tries_with_confidence is its denominator",
+            "below_retry_threshold also counts first tries with no score (no speech), because those are retried too",
+            "avg_word_confidence is weighted by words_with_confidence",
+            "avg_retry_stt_ms averages only the requests that were actually retried",
+            "by_language groups by the language the user picked (requested_locale), not the locale finally used",
+        ],
     })
 
 

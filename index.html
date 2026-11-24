@@ -19,6 +19,8 @@
     th     { background: #f5f5f5; }
     #status { font-weight: 600; }
     .hidden { display: none; }
+    mark   { background: #ffe58a; border-radius: 3px; padding: 0 2px; }  /* Part H: low-confidence word */
+    mark small { color: #7a5b00; }  /* Part H: score shown next to a flagged word */
   </style>
 </head>
 <body>
@@ -59,6 +61,11 @@
     <h3>Transcript</h3>
     <p id="transcript"></p>
     <p class="note" id="confidence"></p>
+    <p class="note" id="retryInfo"></p>
+
+    <h3>Word-by-word check (Part H)</h3>
+    <p id="wordView"></p>
+    <p class="note" id="lowWords"></p>
 
     <h3>English translation (for staff)</h3>
     <p id="translation"></p>
@@ -175,12 +182,51 @@
       }
     });
 
+    // ---------- H-JS: word-by-word confidence view (Part H item 1) ----------
+    // Built straight from the "words" list Azure returns (one entry per word, in order),
+    // so there is no text searching: repeated words and "3rd" vs "third" cannot go wrong.
+    // Flagged words get a yellow mark with the score visible, e.g. "pain (0.55)".
+    // Text nodes only (no innerHTML), so transcript text can never inject HTML.
+    function renderWordView(el, words, language) {
+      el.textContent = "";
+      const gap = /^(zh|ja)/.test(language || "") ? "" : " ";   // no spaces in Chinese/Japanese
+      words.forEach((w, n) => {
+        if (n > 0) el.appendChild(document.createTextNode(gap));
+        if (!w.low_confidence) { el.appendChild(document.createTextNode(w.word || "")); return; }
+        const m = document.createElement("mark");
+        m.appendChild(document.createTextNode(w.word || ""));
+        const score = document.createElement("small");
+        score.textContent = " (" + w.confidence.toFixed(2) + ")";
+        m.appendChild(score);
+        m.setAttribute("aria-label", w.word + ", low confidence " + w.confidence.toFixed(2));
+        el.appendChild(m);
+      });
+    }
+
     // ---------- E-JS 5: fill the results panel ----------
     function showResults(data) {
-      document.getElementById("transcript").textContent = data.transcription.text;
+      // Part H item 1: normal transcript, then the word-by-word check
+      const t = data.transcription;
+      document.getElementById("transcript").textContent = t.text;
+      renderWordView(document.getElementById("wordView"), t.words || [], data.language);
+      const low = t.low_confidence_words || [];
+      const limit = Number(t.low_confidence_threshold).toFixed(2);
+      document.getElementById("lowWords").textContent =
+        !t.word_confidence_available ? "Word-level confidence unavailable for this recording."
+        : low.length ? "Please double-check the highlighted words (confidence below " + limit + "): " +
+                       low.map(w => w.word + " (" + w.confidence.toFixed(2) + ")").join(", ")
+        : "All words recognized with confidence " + limit + " or higher.";
       document.getElementById("confidence").textContent =
         "Speech confidence: " + data.transcription.confidence +
         " | Duration: " + data.transcription.duration_seconds + " s";
+      // Part H item 2: say whether a retry happened and which result was used
+      const r = t.retry || {};
+      document.getElementById("retryInfo").textContent = !r.attempted
+        ? "Retry: none. " + (r.reason || "")
+        : "Retry: first try " + r.original_locale + " = " + r.original_confidence +
+          ", retry " + r.retry_locale + " = " + (r.retry_confidence ?? "n/a") +
+          ". Used: " + r.used_locale + ". Reason: " + (r.reason || "") +
+          " (first " + r.first_stt_ms + " ms, retry " + r.retry_stt_ms + " ms)";
       document.getElementById("translation").textContent = data.translation_en;
 
       // key phrases as tags
