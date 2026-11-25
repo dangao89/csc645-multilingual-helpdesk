@@ -1,4 +1,12 @@
-# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices, E: web page, H: confidence-aware retry + SQLite log + /stats)
+# app.py — Multilingual Help Desk (B: /transcribe, C1: /analyze, C2: /process, D2-D3: TTS + voices, E: web page, G: Application Insights, H: confidence-aware retry + SQLite log + /stats)
+
+# Part G2: Application Insights MUST be initialized first (Pitfall 1)
+from dotenv import load_dotenv
+load_dotenv()  # load .env before everything else
+
+from telemetry import init_telemetry
+init_telemetry()  # initialize before Flask or any Azure SDK imports
+
 import os
 import json
 import shutil
@@ -14,13 +22,15 @@ from datetime import datetime, timezone
 
 import requests
 
-from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
 import azure.cognitiveservices.speech as speechsdk
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
-
-load_dotenv()
+from opentelemetry import metrics      # Part G3: custom metrics
+from opentelemetry import trace        # Part G4: pipeline event on the request span
+import traceback                       # Part G4: safe stack trace for exceptions
+from contextlib import contextmanager  # Part G5: stage_span helper
+from opentelemetry.trace import Status, StatusCode   # Part G5: mark a failed stage span
 
 SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
 SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION")
@@ -37,6 +47,152 @@ text_client = TextAnalyticsClient(
 app = Flask(__name__)
 app.json.ensure_ascii = False  # show Chinese etc. as real characters
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB limit
+
+# ---------------- Part G3: custom metrics (created once, at module level) ----------------
+# Get the meter — do this once at module level, outside any function
+meter = metrics.get_meter("memo-analyzer")
+
+# Part G4: Get a tracer — at module level (used for the stage spans in G5)
+tracer = trace.get_tracer("memo-analyzer")
+
+# Create metric instruments — also at module level
+stt_confidence_gauge    = meter.create_gauge("stt_confidence")
+stt_duration_gauge      = meter.create_gauge("stt_duration_seconds")
+stt_word_count_gauge    = meter.create_gauge("stt_word_count")
+entity_count_gauge      = meter.create_gauge("language_entity_count")
+keyphrase_count_gauge   = meter.create_gauge("language_keyphrase_count")
+sentiment_gauge         = meter.create_gauge("language_sentiment")
+tts_char_count_gauge    = meter.create_gauge("tts_char_count")
+stage_stt_hist          = meter.create_histogram("stage_stt_ms")
+stage_language_hist     = meter.create_histogram("stage_language_ms")
+stage_tts_hist          = meter.create_histogram("stage_tts_ms")
+# Our domain metric (product brief): translation latency per language
+translation_hist        = meter.create_histogram("translation_latency_ms")   # name as in the product brief
+
+
+def timed_stage(fn, *args, **kwargs):
+    """Run fn(*args) and return (result, elapsed_ms)."""
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return result, elapsed_ms
+
+
+@contextmanager
+def stage_span(name):
+    """Part G5: same as  with tracer.start_as_current_span(name) as span:  but if the
+    stage fails, only the error TYPE is recorded (raw Azure SDK messages could echo
+    patient data) and the span is marked as failed in the waterfall."""
+    with tracer.start_as_current_span(name, record_exception=False,
+                                      set_status_on_exception=False) as span:
+        try:
+            yield span
+        except Exception as e:
+            span.set_attribute("error.type", type(e).__name__)
+            if not isinstance(e, AudioError):      # a bad upload is the user's problem, not a failure
+                span.set_status(Status(StatusCode.ERROR, f"{name} failed"))
+            raise
+
+
+def metric_language(locale):
+    """Keep the 'language' label a small, known set (cardinality): unknown -> 'other'."""
+    known = set(VOICES) | set(ALTERNATE_LOCALE) | set(ALTERNATE_LOCALE.values())
+    return locale if locale in known else "other"
+
+
+def emit_pipeline_metrics(stt_result, language_result, tts_result,
+                          stage_timings, audio_format, requested_language):
+    """Call this at the end of /process after all three stages complete."""
+    # language = what the patient chose (same label as translation_ms);
+    # recognition_language = the locale that won after the Part H retry (e.g. es-MX)
+    attrs = {"audio_format": audio_format,
+             "language": metric_language(requested_language),
+             "recognition_language": metric_language(stt_result["recognition_language"])}
+
+    # STT metrics
+    if stt_result["confidence"] is not None:   # can be None if Azure gave no score
+        stt_confidence_gauge.set(stt_result["confidence"], attrs)
+    stt_duration_gauge.set(stt_result["duration_seconds"], attrs)
+    # Word count: Azure's own word list (also works for Chinese/Japanese, which
+    # have no spaces); falls back to the assignment's split() if it is empty.
+    word_count = len(stt_result["words"]) or len(stt_result["transcript"].split())
+    stt_word_count_gauge.set(word_count, attrs)
+
+    # Language metrics
+    entity_count_gauge.set(len(language_result["entities"]), attrs)
+    keyphrase_count_gauge.set(len(language_result["key_phrases"]), attrs)
+    # Azure can also return "mixed" (part positive, part negative): counted as 0,
+    # and the label is attached so mixed and neutral can still be told apart.
+    label = language_result["sentiment"]["label"]
+    sentiment_map = {"positive": 1.0, "neutral": 0.0, "negative": -1.0, "mixed": 0.0}
+    sentiment_gauge.set(
+        sentiment_map.get(label, 0.0),
+        {**attrs, "sentiment_label": label if label in sentiment_map else "other"},
+    )
+
+    # TTS metrics
+    tts_char_count_gauge.set(tts_result["char_count"], attrs)
+
+    # Per-stage latency histograms
+    stage_stt_hist.record(stage_timings["stt_ms"], attrs)
+    stage_language_hist.record(stage_timings["language_ms"], attrs)
+    stage_tts_hist.record(stage_timings["tts_ms"], attrs)
+
+
+def emit_pipeline_event(stt_result, lang_result, audio_format,
+                        success=True, error_stage=None, error_msg=None,
+                        requested_language=None, exc=None, span=None):
+    """Part G4: record pipeline_completed / pipeline_error as attributes on the
+    current request span (shows up as customDimensions in the requests table).
+    error_msg must be a short fixed text written by us (never raw SDK/Translator
+    text, which could echo patient data). exc = the original exception, passed
+    only for real server/service failures (5xx); 4xx get attributes only.
+    span = the request span (Part G5 passes it in, because inside pipeline.process
+    the "current" span is no longer the request)."""
+    try:
+        span = span or trace.get_current_span()
+        # language = what the patient chose (same as the G3 metrics label)
+        lang = metric_language(requested_language or (stt_result or {}).get("language"))
+        if success:
+            span.set_attribute("event.name", "pipeline_completed")
+            if stt_result["confidence"] is not None:
+                span.set_attribute("stt.confidence", stt_result["confidence"])
+            span.set_attribute("stt.language", lang)
+            # Part H retry: the locale that was finally used (e.g. es-MX)
+            span.set_attribute("stt.recognition_language",
+                               metric_language(stt_result["recognition_language"]))
+            span.set_attribute("entities.count", len(lang_result["entities"]))
+            span.set_attribute("sentiment", lang_result["sentiment"]["label"])
+            span.set_attribute("audio.format", audio_format)
+        else:
+            span.set_attribute("event.name", "pipeline_error")
+            span.set_attribute("error.stage", error_stage)
+            span.set_attribute("error.message", (error_msg or "")[:300])
+            span.set_attribute("stt.language", lang)       # which language failed
+            span.set_attribute("audio.format", audio_format)
+            if exc is not None:
+                # keep the real exception type + stack trace, but replace its raw
+                # message with our safe text
+                span.set_attribute("error.type", type(exc).__name__)
+                # (the default stack trace ends with the raw message, so rebuild it)
+                safe_trace = "".join(traceback.format_tb(exc.__traceback__)) + \
+                    f"{type(exc).__name__}: {error_msg or ''}"
+                span.record_exception(exc, attributes={"exception.message": error_msg or "",
+                                                       "exception.stacktrace": safe_trace})
+    except Exception as e:
+        # Monitoring must never break the patient's request
+        print("WARNING: could not emit pipeline event:", e)
+
+
+def emit_translation_metric(ms, language):
+    """Domain metric (product brief): translation latency per language = time to
+    translate the request to English PLUS the reply back, one value per /process call,
+    tagged by the patient's language. English needs no translation -> 0 ms (baseline)."""
+    try:
+        translation_hist.record(ms, {"language": metric_language(language)})
+    except Exception as e:
+        print("WARNING: could not record translation metric:", e)
+
 
 ALLOWED_EXT = {".wav", ".mp3", ".ogg", ".webm", ".m4a", ".aac"}
 TICKS_PER_SECOND = 10_000_000  # SDK time unit is 100 ns
@@ -532,51 +688,138 @@ def build_reply_en(analysis):
 
 @app.route("/process", methods=["POST"])
 def process():
+    # Part G5: remember the request span that Azure created automatically (G2), so the
+    # G4 event stays on the request (requests table) even inside pipeline.process below
+    request_span = trace.get_current_span()
+
+    audio_file = request.files.get("audio")
+    audio_format = os.path.splitext((audio_file.filename if audio_file else "") or "")[1].lstrip(".").lower() or "unknown"
+
+    # Part G5: parent span for the whole pipeline; the stage spans nest inside it
+    with tracer.start_as_current_span("pipeline.process", record_exception=False,
+                                      set_status_on_exception=False) as root_span:
+        root_span.set_attribute("audio.format", audio_format)
+        try:
+            result = run_pipeline(audio_file, audio_format, request_span)
+        except Exception as e:
+            # something unexpected escaped run_pipeline (ChatGPT G5 review):
+            # mark the root span failed (type only, no raw message), then let Flask return 500
+            root_span.set_attribute("error.type", type(e).__name__)
+            root_span.set_status(Status(StatusCode.ERROR, "pipeline failed"))
+            raise
+        status = result[1] if isinstance(result, tuple) else 200
+        if status >= 500:
+            root_span.set_status(Status(StatusCode.ERROR, "pipeline failed"))
+        return result
+
+
+def run_pipeline(audio_file, audio_format, request_span):
+    """The /process pipeline (Parts C-H). Each stage runs inside its own G5 span."""
     language = request.form.get("language", "en-US")  # the patient's language
     tr_code = to_translator_code(language)
     timings = {}
 
-    # 1-2. audio -> transcript (patient's language)
-    t = time.time()
+    # 1-2. audio -> transcript (patient's language)  [G3: timed stage 1 = STT] [G5: span]
     try:
-        stt = transcribe_upload(request.files.get("audio"), language, endpoint="/process")
+        with stage_span("stage.speech_to_text") as stt_span:
+            stt, stt_ms = timed_stage(transcribe_upload, audio_file, language, endpoint="/process")
+            if stt["confidence"] is not None:
+                stt_span.set_attribute("stt.confidence", stt["confidence"])
+            stt_span.set_attribute("stt.word_count", len(stt["words"]) or len(stt["transcript"].split()))
+            stt_span.set_attribute("duration_ms", stt_ms)
     except AudioError as e:
+        # Part G4: bad upload (missing file, unsupported format, too large)
+        # (4xx -> attributes only, no exception recorded)
+        # telemetry gets a fixed text only: str(e) can contain a raw Speech SDK message
+        # (ChatGPT G5 review); the patient still sees the full message in the response
+        emit_pipeline_event(None, None, audio_format, success=False, error_stage="upload",
+                            error_msg=f"Bad upload (HTTP {e.status})", requested_language=language,
+                            span=request_span)
         return jsonify({"error": str(e)}), e.status
     except RuntimeError as e:
+        emit_pipeline_event(None, None, audio_format, success=False, error_stage="stt",
+                            error_msg="Speech service error", requested_language=language, exc=e,
+                            span=request_span)
         return jsonify({"error": "Speech service error: " + str(e)}), 502
-    timings["stt_ms"] = int((time.time() - t) * 1000)   # includes the retry, if any
+    except Exception as e:
+        # anything unexpected in upload/STT (ChatGPT G4 review)
+        emit_pipeline_event(None, None, audio_format, success=False, error_stage="stt",
+                            error_msg="Unexpected STT error", requested_language=language, exc=e,
+                            span=request_span)
+        return jsonify({"error": "Speech-to-text failed: " + str(e)[:300]}), 502
+    timings["stt_ms"] = int(stt_ms)   # includes the retry, if any
 
     if not stt["transcript"]:
+        emit_pipeline_event(stt, None, audio_format, success=False, error_stage="stt",
+                            error_msg="No speech recognized in the audio.", requested_language=language,
+                            span=request_span)
         return jsonify({"error": "No speech recognized in the audio.", "transcription": stt}), 422
 
+    stage = "translate_to_en"   # Part G4: which step we are in, for error.stage
     try:
         # 3. translate to English for staff (skip if already English)
         t = time.time()
         # Part H item 2: translate from the locale that was actually used (zh-TW gives
         # Traditional characters, so the source code must be zh-Hant, not zh-Hans)
         src_code = to_translator_code(stt["recognition_language"])
-        text_en = stt["transcript"] if src_code == "en" else translate(stt["transcript"], "en", src_code)
-        timings["translate_to_en_ms"] = int((time.time() - t) * 1000)
+        with stage_span("stage.translate_to_en") as tr_span:      # G5 (our extra stage)
+            text_en = stt["transcript"] if src_code == "en" else translate(stt["transcript"], "en", src_code)
+            timings["translate_to_en_ms"] = int((time.time() - t) * 1000)
+            tr_span.set_attribute("translation.skipped", src_code == "en")
+            tr_span.set_attribute("duration_ms", timings["translate_to_en_ms"])
 
-        # 4. Language analysis on the English text
-        t = time.time()
-        analysis = analyze_text(text_en, "en")
-        timings["analyze_ms"] = int((time.time() - t) * 1000)
+        # 4. Language analysis on the English text  [Part G3: timed stage 2 = Language]
+        stage = "language"
+        with stage_span("stage.language_analysis") as lang_span:   # G5
+            analysis, language_ms = timed_stage(analyze_text, text_en, "en")
+            lang_span.set_attribute("entity_count", len(analysis["entities"]))
+            lang_span.set_attribute("sentiment", analysis["sentiment"]["label"])
+            lang_span.set_attribute("duration_ms", language_ms)
+        timings["analyze_ms"] = int(language_ms)
 
         # 5. summary for staff + reply translated back into the patient's language
         summary_en = build_summary(analysis)
         reply_en = build_reply_en(analysis)
+        stage = "translate_back"
         t = time.time()
-        reply_text = reply_en if tr_code == "en" else translate(reply_en, tr_code, "en")
-        timings["translate_back_ms"] = int((time.time() - t) * 1000)
+        with stage_span("stage.translate_back") as tb_span:      # G5 (our extra stage)
+            reply_text = reply_en if tr_code == "en" else translate(reply_en, tr_code, "en")
+            timings["translate_back_ms"] = int((time.time() - t) * 1000)
+            tb_span.set_attribute("translation.skipped", tr_code == "en")
+            tb_span.set_attribute("duration_ms", timings["translate_back_ms"])
+        # Domain metric: request -> English + reply -> patient language (0 for English)
+        emit_translation_metric(timings["translate_to_en_ms"] + timings["translate_back_ms"], language)
 
         # 6. Part D2: speak the reply in the patient's language
         voice = pick_voice(language, request.form.get("voice"))  # D3: user's choice
-        t = time.time()
-        audio_b64 = base64.b64encode(synthesize(reply_text, voice)).decode("ascii")
-        timings["tts_ms"] = int((time.time() - t) * 1000)
+        # [Part G3: timed stage 3 = TTS]
+        stage = "tts"
+        with stage_span("stage.text_to_speech") as tts_span:      # G5
+            audio_bytes, tts_ms = timed_stage(synthesize, reply_text, voice)
+            tts_span.set_attribute("char_count", len(reply_text))
+            tts_span.set_attribute("duration_ms", tts_ms)
+        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        timings["tts_ms"] = int(tts_ms)
     except Exception as e:
+        emit_pipeline_event(stt, None, audio_format, success=False, error_stage=stage,
+                            error_msg=f"{stage} failed", requested_language=language, exc=e,
+                            span=request_span)
         return jsonify({"error": "Pipeline error: " + str(e)[:300], "transcription": stt}), 502
+
+    # Part G3: all three stages succeeded -> send the custom metrics to Application Insights.
+    # Monitoring must never break the patient's request, so errors are only printed.
+    try:
+        emit_pipeline_metrics(
+            stt, analysis, {"char_count": len(reply_text)},
+            {"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms},
+            audio_format, language,
+        )
+    except Exception as e:
+        print("WARNING: could not emit pipeline metrics:", e)
+
+    # Part G4: success event on the request span
+    emit_pipeline_event(stt, analysis, audio_format, success=True, requested_language=language,
+                            span=request_span)
 
     return jsonify({
         "language": language,
@@ -687,6 +930,10 @@ def stats():
 
 @app.errorhandler(413)
 def too_large(e):
+    # Part G4: Flask rejects a >25 MB upload before /process runs, so record the event here
+    if request.path == "/process":
+        emit_pipeline_event(None, None, "unknown", success=False, error_stage="upload",
+                            error_msg="File too large (over 25 MB)")
     return jsonify({"error": "File too large. Max 25 MB."}), 413
 
 
