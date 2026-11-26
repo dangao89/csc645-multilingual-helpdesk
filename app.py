@@ -19,6 +19,8 @@ import base64
 import sqlite3                     # Part H item 3: local log database (built into Python)
 import uuid
 from datetime import datetime, timezone
+from collections import defaultdict   # Part G8 (professor's code)
+import statistics                     # Part G8: mean for /telemetry-summary
 
 import requests
 
@@ -817,6 +819,9 @@ def run_pipeline(audio_file, audio_format, request_span):
     except Exception as e:
         print("WARNING: could not emit pipeline metrics:", e)
 
+    # Part G8: add this call to the in-memory session log for /telemetry-summary
+    log_pipeline_call(stt, analysis, {"stt_ms": stt_ms, "language_ms": language_ms, "tts_ms": tts_ms})
+
     # Part G4: success event on the request span
     emit_pipeline_event(stt, analysis, audio_format, success=True, requested_language=language,
                             span=request_span)
@@ -889,6 +894,47 @@ def tidy(row):
                                                       "low_confidence_words", "below_retry_threshold",
                                                       "words_with_confidence") else None)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Part G8: GET /telemetry-summary (professor's code from the PDF, unchanged)
+# ---------------------------------------------------------------------------
+# At module level — in-memory session log
+session_log = []
+
+
+def log_pipeline_call(stt_result, lang_result, timings):
+    """Call this at the end of every /process execution."""
+    session_log.append({
+        "confidence": stt_result["confidence"],
+        "language": stt_result["language"],
+        "entity_count": len(lang_result["entities"]),
+        "sentiment": lang_result["sentiment"]["label"],
+        "stt_ms": timings["stt_ms"],
+        "language_ms": timings["language_ms"],
+        "tts_ms": timings["tts_ms"],
+    })
+
+
+@app.route("/telemetry-summary", methods=["GET"])
+def telemetry_summary():
+    if not session_log:
+        return jsonify({"message": "No calls yet"})
+
+    confidences = [e["confidence"] for e in session_log]
+    return jsonify({
+        "total_calls": len(session_log),
+        "avg_confidence": round(statistics.mean(confidences), 3),
+        "min_confidence": round(min(confidences), 3),
+        "p95_stt_ms": round(sorted(
+            [e["stt_ms"] for e in session_log]
+        )[int(len(session_log)*0.95)-1], 1),
+        "sentiment_breakdown": {
+            s: sum(1 for e in session_log if e["sentiment"]==s)
+            for s in ["positive","neutral","negative"]
+        },
+        "calls": session_log[-10:]  # last 10
+    })
 
 
 @app.route("/stats")
